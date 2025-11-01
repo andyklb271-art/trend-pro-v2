@@ -10,19 +10,17 @@ const {
   FRONTEND_ORIGIN = 'https://trend-pro.onrender.com',
   NODE_ENV = 'production',
   SESSION_SECRET = 'change-me',
-  COOKIE_SECURE = 'true', // in Render: true
+  COOKIE_SECURE = 'true',
 } = process.env;
 
 const app = express();
-
-// --- minimaler In-Memory Session-Store ---
-const SESSIONS = new Map(); // sid -> { access_token, refresh_token, open_id, expires_in, created_at }
+const SESSIONS = new Map(); // In-Memory Session Store
 
 app.use(express.json());
 app.use(cors({ origin: [FRONTEND_ORIGIN], credentials: true }));
 app.use(cookieParser(SESSION_SECRET));
 
-// Session Helper
+// ---- Session helpers ----
 function setSession(res, session) {
   const sid = crypto.randomBytes(24).toString('hex');
   SESSIONS.set(sid, { ...session, created_at: Date.now() });
@@ -34,31 +32,33 @@ function setSession(res, session) {
     signed: true,
   });
 }
+
 function getSession(req) {
   const sid = req.signedCookies?.sid;
-  if (!sid) return null;
-  return SESSIONS.get(sid) || null;
+  return sid ? SESSIONS.get(sid) || null : null;
 }
+
 function clearSession(req, res) {
   const sid = req.signedCookies?.sid;
   if (sid) SESSIONS.delete(sid);
   res.clearCookie('sid');
 }
 
-// Health & ENV-Debug (nur für dich)
+// ---- Routes ----
 app.get('/health', (_req, res) => res.json({ ok: true }));
+
 app.get('/debug-env', (_req, res) => {
   res.json({
-    FRONTEND_ORIGIN, NODE_ENV, PORT,
+    FRONTEND_ORIGIN,
     REDIRECT_URI: process.env.REDIRECT_URI,
+    PORT,
+    NODE_ENV,
   });
 });
 
-// --- API: aktueller User ---
 app.get('/api/me', async (req, res) => {
   const sess = getSession(req);
   if (!sess?.access_token) return res.status(401).json({ authenticated: false });
-
   try {
     const r = await fetch('https://open.tiktokapis.com/v2/user/info/', {
       method: 'GET',
@@ -72,20 +72,21 @@ app.get('/api/me', async (req, res) => {
   }
 });
 
-// --- Logout ---
 app.post('/auth/logout', (req, res) => {
   clearSession(req, res);
   res.json({ ok: true });
 });
 
-// TikTok Auth-Router bekommt Zugriff auf Session-Setter
+// Session Setter Injection
 app.use((req, res, next) => {
   req.__setSession = (payload) => setSession(res, payload);
   next();
 });
+
 app.use('/auth/tiktok', tiktokRouter);
 
+// ---- Start Server ----
 app.listen(Number(PORT), '0.0.0.0', () => {
-  console.log(✅ API on :);
-  console.log(FRONTEND_ORIGIN: );
+  console.log('✅ API running on :' + PORT);
+  console.log('FRONTEND_ORIGIN:', FRONTEND_ORIGIN);
 });
