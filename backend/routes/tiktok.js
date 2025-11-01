@@ -4,18 +4,32 @@ import fetch from "node-fetch";
 
 const router = express.Router();
 
-const {
-  TIKTOK_CLIENT_KEY,
-  TIKTOK_CLIENT_SECRET,
-  REDIRECT_URI,
-  FRONTEND_ORIGIN,
-} = process.env;
+// --- Helper: sichere, getrimmte ENV-Werte ---
+const val = (v) => (v ?? "").toString().trim();
 
-// ---- Login: Redirect zu TikTok (ohne PKCE für Web) ----
+const CLIENT_KEY      = val(process.env.TIKTOK_CLIENT_KEY);
+const CLIENT_SECRET   = val(process.env.TIKTOK_CLIENT_SECRET);
+const REDIRECT_URI    = val(process.env.REDIRECT_URI);
+const FRONTEND_ORIGIN = val(process.env.FRONTEND_ORIGIN || "http://localhost:5173");
+
+function ensureEnv(res) {
+  const miss = [];
+  if (!CLIENT_KEY)    miss.push("TIKTOK_CLIENT_KEY");
+  if (!CLIENT_SECRET) miss.push("TIKTOK_CLIENT_SECRET");
+  if (!REDIRECT_URI)  miss.push("REDIRECT_URI");
+  if (miss.length) {
+    res.status(500).type("text").send("Missing ENV: " + miss.join(", "));
+    return false;
+  }
+  return true;
+}
+
+// ---- Login: Redirect zu TikTok ----
 router.get("/login", (_req, res) => {
+  if (!ensureEnv(res)) return;
   const state = crypto.randomBytes(16).toString("hex");
   const u = new URL("https://www.tiktok.com/v2/auth/authorize/");
-  u.searchParams.set("client_key", TIKTOK_CLIENT_KEY);
+  u.searchParams.set("client_key", CLIENT_KEY);
   u.searchParams.set("scope", "user.info.basic");
   u.searchParams.set("response_type", "code");
   u.searchParams.set("redirect_uri", REDIRECT_URI);
@@ -23,8 +37,21 @@ router.get("/login", (_req, res) => {
   res.redirect(u.toString());
 });
 
-// ---- Callback: Token tauschen (form-urlencoded, nur 5 Felder) ----
+// ---- Debug: zeig mir, was der Server glaubt zu senden ----
+router.get("/debug", (_req, res) => {
+  res.json({
+    env: {
+      TIKTOK_CLIENT_KEY_present: !!CLIENT_KEY,
+      TIKTOK_CLIENT_SECRET_present: !!CLIENT_SECRET,
+      REDIRECT_URI,
+      FRONTEND_ORIGIN,
+    }
+  });
+});
+
+// ---- Callback: Token tauschen (x-www-form-urlencoded, nur 5 Felder) ----
 router.get("/callback", async (req, res) => {
+  if (!ensureEnv(res)) return;
   const { code, error, error_description } = req.query;
   if (error) return res.status(400).send(\TikTok Error: \Die Benennung "EOF" wurde nicht als Name eines Cmdlet, einer Funktion, einer Skriptdatei oder eines ausführbaren Programms erkannt. Überprüfen Sie die Schreibweise des Namens, oder ob der Pfad korrekt ist (sofern enthalten), und wiederholen Sie den Vorgang. Die Benennung "export" wurde nicht als Name eines Cmdlet, einer Funktion, einer Skriptdatei oder eines ausführbaren Programms erkannt. Überprüfen Sie die Schreibweise des Namens, oder ob der Pfad korrekt ist (sofern enthalten), und wiederholen Sie den Vorgang. System.Management.Automation.ParseException: In Zeile:1 Zeichen:24
 + router.get("/callback", async (req, res) => {
@@ -642,12 +669,15 @@ Der Operator "<" ist für zukünftige Versionen reserviert.
     const decodedCode = decodeURIComponent(String(code));
 
     const form = new URLSearchParams({
-      client_key: TIKTOK_CLIENT_KEY,
-      client_secret: TIKTOK_CLIENT_SECRET,
-      code: decodedCode,                     // URL-decodet!
+      client_key: CLIENT_KEY,
+      client_secret: CLIENT_SECRET,
+      code: decodedCode,
       grant_type: "authorization_code",
-      redirect_uri: REDIRECT_URI,            // exakt wie in TikTok Developers
+      redirect_uri: REDIRECT_URI,
     });
+
+    // *** Debug: nur Schlüsselnamen loggen, keine Secrets! ***
+    console.log("POST /v2/oauth/token fields:", Array.from(form.keys()));
 
     const r = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
       method: "POST",
@@ -655,15 +685,19 @@ Der Operator "<" ist für zukünftige Versionen reserviert.
       body: form.toString(),
     });
 
-    const data = await r.json();
+    const text = await r.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
 
-    if (!r.ok || data.error || data.error_code) {
-      return res.status(400).send(\Token exchange failed: \\);
+    console.log("Token response status:", r.status, "ok:", r.ok);
+
+    if (!r.ok || (data && (data.error || data.error_code || (data.data && data.data.error_code)))) {
+      return res.status(400).type("text").send("Token exchange failed:\n" + JSON.stringify(data));
     }
 
     return res.redirect(\\/?auth=ok\);
   } catch (err) {
-    return res.status(500).send(\Token fetch failed: \\);
+    return res.status(500).send("Token fetch failed: " + err.message);
   }
 });
 

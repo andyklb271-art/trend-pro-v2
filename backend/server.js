@@ -19,6 +19,16 @@ app.use(cors({ origin: [FRONTEND_ORIGIN], credentials: true }));
 app.use(cookieParser(process.env.SESSION_SECRET));
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
+
+// ENV-Debug: zeigt geladene Werte (ohne Secrets)
+app.get('/debug-env', (_req, res) => {
+  res.json({
+    FRONTEND_ORIGIN: process.env.FRONTEND_ORIGIN,
+    REDIRECT_URI: process.env.REDIRECT_URI,
+    NODE_ENV: process.env.NODE_ENV,
+    PORT: process.env.PORT
+  });
+});
 app.use('/auth/tiktok', tiktokRouter);
 
 app.get('/', (_req, res) => {
@@ -36,3 +46,4 @@ app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(\FRONTEND_ORIGIN: \\);
   console.log(\REDIRECT_URI   : \\);
 });
+
