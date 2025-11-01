@@ -11,7 +11,7 @@ const {
   FRONTEND_ORIGIN,
 } = process.env;
 
-// Login starten -> Redirect zu TikTok
+// Login -> TikTok
 router.get("/login", (req, res) => {
   const state = crypto.randomBytes(16).toString("hex");
   const authUrl = new URL("https://www.tiktok.com/v2/auth/authorize/");
@@ -23,7 +23,7 @@ router.get("/login", (req, res) => {
   res.redirect(authUrl.toString());
 });
 
-// Callback -> Token holen (nur erlaubte Felder!)
+// Callback -> Token tauschen (WICHTIG: x-www-form-urlencoded!)
 router.get("/callback", async (req, res) => {
   const { code, error, error_description } = req.query;
   if (error) return res.status(400).send(\TikTok Error: \Die Benennung "EOF" wurde nicht als Name eines Cmdlet, einer Funktion, einer Skriptdatei oder eines ausführbaren Programms erkannt. Überprüfen Sie die Schreibweise des Namens, oder ob der Pfad korrekt ist (sofern enthalten), und wiederholen Sie den Vorgang. Die Benennung "export" wurde nicht als Name eines Cmdlet, einer Funktion, einer Skriptdatei oder eines ausführbaren Programms erkannt. Überprüfen Sie die Schreibweise des Namens, oder ob der Pfad korrekt ist (sofern enthalten), und wiederholen Sie den Vorgang. System.Management.Automation.ParseException: In Zeile:1 Zeichen:24
@@ -639,16 +639,18 @@ Der Operator "<" ist für zukünftige Versionen reserviert.
   if (!code) return res.status(400).send("Missing ?code parameter");
 
   try {
+    const form = new URLSearchParams({
+      client_key: TIKTOK_CLIENT_KEY,
+      client_secret: TIKTOK_CLIENT_SECRET,
+      code: String(code),
+      grant_type: "authorization_code",
+      redirect_uri: REDIRECT_URI,
+    });
+
     const r = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        client_key: TIKTOK_CLIENT_KEY,
-        client_secret: TIKTOK_CLIENT_SECRET,
-        code,
-        grant_type: "authorization_code",
-        redirect_uri: REDIRECT_URI,
-      }),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
     });
 
     const data = await r.json();
