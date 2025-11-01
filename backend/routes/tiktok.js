@@ -9,9 +9,15 @@ const CLIENT_KEY      = val(process.env.TIKTOK_CLIENT_KEY);
 const CLIENT_SECRET   = val(process.env.TIKTOK_CLIENT_SECRET);
 const REDIRECT_URI    = val(process.env.REDIRECT_URI);
 const FRONTEND_ORIGIN = val(process.env.FRONTEND_ORIGIN || "https://trend-pro.onrender.com");
-const SCOPES          = val(process.env.TIKTOK_SCOPES || "user.info.basic,user.info.profile");
+// SCOPES: Leerzeichen-getrennt!
+const SCOPES          = val(process.env.TIKTOK_SCOPES || "user.info.basic user.info.profile");
 
-// ---- Debug-Route: zeigt geladene ENV ----
+// --- PKCE helpers ---
+const b64url = (buf) => buf.toString("base64").replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+const genVerifier = () => b64url(crypto.randomBytes(64));
+const challengeOf = (verifier) => b64url(crypto.createHash("sha256").update(verifier).digest());
+
+// Debug
 router.get("/debug", (_req, res) => {
   res.json({
     key_present: !!CLIENT_KEY,
@@ -22,22 +28,31 @@ router.get("/debug", (_req, res) => {
   });
 });
 
-// ---- Login ----
-router.get("/login", (_req, res) => {
+// Login (mit PKCE + SCOPES als Leerzeichenkette)
+router.get("/login", (req, res) => {
   const state = crypto.randomBytes(16).toString("hex");
+  const verifier = genVerifier();
+  const challenge = challengeOf(verifier);
+
+  // Verifier in Cookie parken
+  res.cookie("tt_code_verifier", verifier, { httpOnly: true, sameSite: "lax", secure: true });
+
   const u = new URL("https://www.tiktok.com/v2/auth/authorize/");
   u.searchParams.set("client_key", CLIENT_KEY);
-  u.searchParams.set("scope", SCOPES);
+  u.searchParams.set("scope", SCOPES);                   // SPACE-separated!
   u.searchParams.set("response_type", "code");
   u.searchParams.set("redirect_uri", REDIRECT_URI);
   u.searchParams.set("state", state);
+  u.searchParams.set("code_challenge", challenge);       // PKCE
+  u.searchParams.set("code_challenge_method", "S256");   // PKCE
+
   res.redirect(u.toString());
 });
 
-// ---- Callback -> Token tauschen (GENAU 5 Felder, x-www-form-urlencoded) ----
+// Callback -> Token tauschen (x-www-form-urlencoded, GENAU 5 + code_verifier)
 router.get("/callback", async (req, res) => {
   const { code, error, error_description } = req.query;
-  if (error) return res.status(400).send(\TikTok Error: \System.Management.Automation.ParseException: In Zeile:1 Zeichen:119
+  if (error) return res.status(400).send(\TikTok Error: \Die Benennung "https://trend-pro.onrender.com/auth/tiktok/debug" wurde nicht als Name eines Cmdlet, einer Funktion, einer Skriptdatei oder eines ausführbaren Programms erkannt. Überprüfen Sie die Schreibweise des Namens, oder ob der Pfad korrekt ist (sofern enthalten), und wiederholen Sie den Vorgang. Die Benennung "https://trend-pro.onrender.com/debug-env" wurde nicht als Name eines Cmdlet, einer Funktion, einer Skriptdatei oder eines ausführbaren Programms erkannt. Überprüfen Sie die Schreibweise des Namens, oder ob der Pfad korrekt ist (sofern enthalten), und wiederholen Sie den Vorgang. System.Management.Automation.ParseException: In Zeile:1 Zeichen:119
 + ... function clearSession[\s\S]+?res.clearCookie\(\'sid\'\);\n\}', $patch ...
 +                                                     ~~~~~~~~~~~~~
 Unerwartetes Token "sid\'\);\n\}'" in Ausdruck oder Anweisung.
@@ -680,8 +695,8 @@ Der Operator "<" ist für zukünftige Versionen reserviert.
   if (!code) return res.status(400).send("Missing ?code");
 
   try {
-    // code sicher dekodieren (enthält oft %2A, + etc.)
     const decodedCode = decodeURIComponent(String(code));
+    const code_verifier = req.cookies?.tt_code_verifier || "";
 
     const form = new URLSearchParams({
       client_key:   CLIENT_KEY,
@@ -689,10 +704,11 @@ Der Operator "<" ist für zukünftige Versionen reserviert.
       code:         decodedCode,
       grant_type:   "authorization_code",
       redirect_uri: REDIRECT_URI,
+      // PKCE: nur mitsenden, wenn vorhanden (erlaubt von TikTok)
+      ...(code_verifier ? { code_verifier } : {})
     });
 
-    // Log nur Feldnamen, keine Secrets
-    console.log("OAuth token body keys:", Array.from(form.keys()));
+    console.log("OAuth token body keys:", Array.from(form.keys())); // nur Schlüssel
 
     const r = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
       method: "POST",
@@ -707,13 +723,16 @@ Der Operator "<" ist für zukünftige Versionen reserviert.
       return res.status(400).type("text").send("Token exchange failed: " + JSON.stringify(data));
     }
 
-    // Session ins Backend einhängen (server.js setzt setSession)
+    // Session im Backend setzen (server.js injiziert __setSession)
     req.__setSession?.({
       access_token: data.access_token,
       refresh_token: data.refresh_token,
       open_id: data.open_id,
       expires_in: data.expires_in,
     });
+
+    // Aufräumen
+    res.clearCookie("tt_code_verifier");
 
     return res.redirect(\\/?auth=ok\);
   } catch (e) {
