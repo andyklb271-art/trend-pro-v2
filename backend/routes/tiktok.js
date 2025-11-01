@@ -69,7 +69,7 @@ router.get("/callback", async (req,res)=>{
     // Versuch A – minimal
     let { r, data } = await exchange(base);
     if (r.ok && !data?.error && !data?.error_code && !data?.data?.error_code) {
-      return res.redirect(`${FRONT}/?auth=ok`);
+      return res.redirect(`${FRONT}/api/me?auth=ok`);
     }
 
     // Versuch B – bei 10002 mit PKCE
@@ -80,7 +80,7 @@ router.get("/callback", async (req,res)=>{
       ({ r, data } = await exchange(bodyB));
       if (r.ok && !data?.error && !data?.error_code && !data?.data?.error_code) {
         res.clearCookie("tt_code_verifier");
-        return res.redirect(`${FRONT}/?auth=ok`);
+        return res.redirect(`${FRONT}/api/me?auth=ok`);
       }
     }
 
@@ -91,3 +91,4 @@ router.get("/callback", async (req,res)=>{
 });
 
 export default router;
+
