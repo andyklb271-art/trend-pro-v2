@@ -9,15 +9,9 @@ const CLIENT_KEY      = val(process.env.TIKTOK_CLIENT_KEY);
 const CLIENT_SECRET   = val(process.env.TIKTOK_CLIENT_SECRET);
 const REDIRECT_URI    = val(process.env.REDIRECT_URI);
 const FRONTEND_ORIGIN = val(process.env.FRONTEND_ORIGIN || "https://trend-pro.onrender.com");
-// SCOPES: Leerzeichen-getrennt!
 const SCOPES          = val(process.env.TIKTOK_SCOPES || "user.info.basic user.info.profile");
 
-// --- PKCE helpers ---
-const b64url = (buf) => buf.toString("base64").replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
-const genVerifier = () => b64url(crypto.randomBytes(64));
-const challengeOf = (verifier) => b64url(crypto.createHash("sha256").update(verifier).digest());
-
-// Debug
+// Debug-Route
 router.get("/debug", (_req, res) => {
   res.json({
     key_present: !!CLIENT_KEY,
@@ -28,31 +22,32 @@ router.get("/debug", (_req, res) => {
   });
 });
 
-// Login (mit PKCE + SCOPES als Leerzeichenkette)
+// PKCE helpers
+const b64url = (buf) => buf.toString("base64").replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+const genVerifier = () => b64url(crypto.randomBytes(64));
+const challengeOf = (v) => b64url(crypto.createHash("sha256").update(v).digest());
+
+// Login
 router.get("/login", (req, res) => {
   const state = crypto.randomBytes(16).toString("hex");
   const verifier = genVerifier();
-  const challenge = challengeOf(verifier);
-
-  // Verifier in Cookie parken
   res.cookie("tt_code_verifier", verifier, { httpOnly: true, sameSite: "lax", secure: true });
 
   const u = new URL("https://www.tiktok.com/v2/auth/authorize/");
   u.searchParams.set("client_key", CLIENT_KEY);
-  u.searchParams.set("scope", SCOPES);                   // SPACE-separated!
+  u.searchParams.set("scope", SCOPES); // SPACE-separated!
   u.searchParams.set("response_type", "code");
   u.searchParams.set("redirect_uri", REDIRECT_URI);
   u.searchParams.set("state", state);
-  u.searchParams.set("code_challenge", challenge);       // PKCE
-  u.searchParams.set("code_challenge_method", "S256");   // PKCE
-
+  u.searchParams.set("code_challenge", challengeOf(verifier));
+  u.searchParams.set("code_challenge_method", "S256");
   res.redirect(u.toString());
 });
 
-// Callback -> Token tauschen (x-www-form-urlencoded, GENAU 5 + code_verifier)
+// Callback
 router.get("/callback", async (req, res) => {
   const { code, error, error_description } = req.query;
-  if (error) return res.status(400).send(\TikTok Error: \Die Benennung "https://trend-pro.onrender.com/auth/tiktok/debug" wurde nicht als Name eines Cmdlet, einer Funktion, einer Skriptdatei oder eines ausführbaren Programms erkannt. Überprüfen Sie die Schreibweise des Namens, oder ob der Pfad korrekt ist (sofern enthalten), und wiederholen Sie den Vorgang. Die Benennung "https://trend-pro.onrender.com/debug-env" wurde nicht als Name eines Cmdlet, einer Funktion, einer Skriptdatei oder eines ausführbaren Programms erkannt. Überprüfen Sie die Schreibweise des Namens, oder ob der Pfad korrekt ist (sofern enthalten), und wiederholen Sie den Vorgang. System.Management.Automation.ParseException: In Zeile:1 Zeichen:119
+  if (error) return res.status(400).send(TikTok Error: Die Benennung "https://trend-pro.onrender.com/auth/tiktok/debug" wurde nicht als Name eines Cmdlet, einer Funktion, einer Skriptdatei oder eines ausführbaren Programms erkannt. Überprüfen Sie die Schreibweise des Namens, oder ob der Pfad korrekt ist (sofern enthalten), und wiederholen Sie den Vorgang. Die Benennung "https://trend-pro.onrender.com/debug-env" wurde nicht als Name eines Cmdlet, einer Funktion, einer Skriptdatei oder eines ausführbaren Programms erkannt. Überprüfen Sie die Schreibweise des Namens, oder ob der Pfad korrekt ist (sofern enthalten), und wiederholen Sie den Vorgang. System.Management.Automation.ParseException: In Zeile:1 Zeichen:119
 + ... function clearSession[\s\S]+?res.clearCookie\(\'sid\'\);\n\}', $patch ...
 +                                                     ~~~~~~~~~~~~~
 Unerwartetes Token "sid\'\);\n\}'" in Ausdruck oder Anweisung.
@@ -691,7 +686,7 @@ In Zeile:1 Zeichen:18
 +                  ~
 Der Operator "<" ist für zukünftige Versionen reserviert.
    bei System.Management.Automation.Runspaces.PipelineBase.Invoke(IEnumerable input)
-   bei Microsoft.PowerShell.Executor.ExecuteCommandHelper(Pipeline tempPipeline, Exception& exceptionThrown, ExecutionOptions options) FileStream sollte ein Gerät öffnen, das keine Datei ist. Wenn Sie Unterstützung für Geräte benötigen, z. B. "com1" oder "lpt1:", rufen Sie CreateFile auf, bevor Sie die FileStream-Konstruktoren verwenden, die ein OS Betriebssystemhandle als IntPtr behandeln. - \\);
+   bei Microsoft.PowerShell.Executor.ExecuteCommandHelper(Pipeline tempPipeline, Exception& exceptionThrown, ExecutionOptions options) FileStream sollte ein Gerät öffnen, das keine Datei ist. Wenn Sie Unterstützung für Geräte benötigen, z. B. "com1" oder "lpt1:", rufen Sie CreateFile auf, bevor Sie die FileStream-Konstruktoren verwenden, die ein OS Betriebssystemhandle als IntPtr behandeln. - );
   if (!code) return res.status(400).send("Missing ?code");
 
   try {
@@ -704,11 +699,10 @@ Der Operator "<" ist für zukünftige Versionen reserviert.
       code:         decodedCode,
       grant_type:   "authorization_code",
       redirect_uri: REDIRECT_URI,
-      // PKCE: nur mitsenden, wenn vorhanden (erlaubt von TikTok)
       ...(code_verifier ? { code_verifier } : {})
     });
 
-    console.log("OAuth token body keys:", Array.from(form.keys())); // nur Schlüssel
+    console.log("OAuth token body keys:", Array.from(form.keys()));
 
     const r = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
       method: "POST",
@@ -723,7 +717,6 @@ Der Operator "<" ist für zukünftige Versionen reserviert.
       return res.status(400).type("text").send("Token exchange failed: " + JSON.stringify(data));
     }
 
-    // Session im Backend setzen (server.js injiziert __setSession)
     req.__setSession?.({
       access_token: data.access_token,
       refresh_token: data.refresh_token,
@@ -731,10 +724,8 @@ Der Operator "<" ist für zukünftige Versionen reserviert.
       expires_in: data.expires_in,
     });
 
-    // Aufräumen
     res.clearCookie("tt_code_verifier");
-
-    return res.redirect(\\/?auth=ok\);
+    return res.redirect(${FRONTEND_ORIGIN}/?auth=ok);
   } catch (e) {
     return res.status(500).send("Token fetch failed: " + e.message);
   }
