@@ -11,21 +11,45 @@ const {
   FRONTEND_ORIGIN,
 } = process.env;
 
-// Login -> TikTok
+// --- Helpers ---
+function base64url(buf) {
+  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function genCodeVerifier() {
+  // 43-128 chars recommended
+  return base64url(crypto.randomBytes(64));
+}
+function genCodeChallenge(verifier) {
+  const hash = crypto.createHash("sha256").update(verifier).digest();
+  return base64url(hash);
+}
+
+// === Login: redirect zu TikTok (mit PKCE) ===
 router.get("/login", (req, res) => {
   const state = crypto.randomBytes(16).toString("hex");
+  const code_verifier = genCodeVerifier();
+  const code_challenge = genCodeChallenge(code_verifier);
+
+  // Verifier + State kurzzeitig in Cookies parken
+  res.cookie("tiktok_oauth_state", state, { httpOnly: true, sameSite: "lax", secure: true });
+  res.cookie("tiktok_code_verifier", code_verifier, { httpOnly: true, sameSite: "lax", secure: true });
+
   const authUrl = new URL("https://www.tiktok.com/v2/auth/authorize/");
   authUrl.searchParams.set("client_key", TIKTOK_CLIENT_KEY);
   authUrl.searchParams.set("scope", "user.info.basic");
   authUrl.searchParams.set("response_type", "code");
   authUrl.searchParams.set("redirect_uri", REDIRECT_URI);
   authUrl.searchParams.set("state", state);
+  // --- PKCE ---
+  authUrl.searchParams.set("code_challenge", code_challenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+
   res.redirect(authUrl.toString());
 });
 
-// Callback -> Token tauschen (WICHTIG: x-www-form-urlencoded!)
+// === Callback: Token holen (mit code_verifier) ===
 router.get("/callback", async (req, res) => {
-  const { code, error, error_description } = req.query;
+  const { code, state, error, error_description } = req.query;
   if (error) return res.status(400).send(\TikTok Error: \Die Benennung "EOF" wurde nicht als Name eines Cmdlet, einer Funktion, einer Skriptdatei oder eines ausführbaren Programms erkannt. Überprüfen Sie die Schreibweise des Namens, oder ob der Pfad korrekt ist (sofern enthalten), und wiederholen Sie den Vorgang. Die Benennung "export" wurde nicht als Name eines Cmdlet, einer Funktion, einer Skriptdatei oder eines ausführbaren Programms erkannt. Überprüfen Sie die Schreibweise des Namens, oder ob der Pfad korrekt ist (sofern enthalten), und wiederholen Sie den Vorgang. System.Management.Automation.ParseException: In Zeile:1 Zeichen:24
 + router.get("/callback", async (req, res) => {
 +                        ~
@@ -638,6 +662,17 @@ Der Operator "<" ist für zukünftige Versionen reserviert.
    bei Microsoft.PowerShell.Executor.ExecuteCommandHelper(Pipeline tempPipeline, Exception& exceptionThrown, ExecutionOptions options) FileStream sollte ein Gerät öffnen, das keine Datei ist. Wenn Sie Unterstützung für Geräte benötigen, z. B. "com1" oder "lpt1:", rufen Sie CreateFile auf, bevor Sie die FileStream-Konstruktoren verwenden, die ein OS Betriebssystemhandle als IntPtr behandeln. - \\);
   if (!code) return res.status(400).send("Missing ?code parameter");
 
+  const savedState = req.cookies?.tiktok_oauth_state;
+  const code_verifier = req.cookies?.tiktok_code_verifier;
+
+  // (optional) State prüfen
+  if (!savedState || savedState !== state) {
+    return res.status(400).send("Invalid state");
+  }
+  if (!code_verifier) {
+    return res.status(400).send("Missing code_verifier cookie");
+  }
+
   try {
     const form = new URLSearchParams({
       client_key: TIKTOK_CLIENT_KEY,
@@ -645,6 +680,8 @@ Der Operator "<" ist für zukünftige Versionen reserviert.
       code: String(code),
       grant_type: "authorization_code",
       redirect_uri: REDIRECT_URI,
+      // --- PKCE ---
+      code_verifier: code_verifier,
     });
 
     const r = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
@@ -654,9 +691,14 @@ Der Operator "<" ist für zukünftige Versionen reserviert.
     });
 
     const data = await r.json();
+
     if (!r.ok || data.error || data.error_code) {
       return res.status(400).send(\Token exchange failed: \\);
     }
+
+    // Aufräumen
+    res.clearCookie("tiktok_oauth_state");
+    res.clearCookie("tiktok_code_verifier");
 
     return res.redirect(\\/?auth=ok\);
   } catch (err) {
