@@ -19,7 +19,7 @@ app.use(express.json());
 app.use(cors({ origin: [FRONTEND_ORIGIN], credentials: true }));
 app.use(cookieParser(SESSION_SECRET));
 
-// ---- Sessions global sichtbar machen (für Router/Debug)
+// ---- Sessions global (für Router & Debug)
 const SESSIONS = new Map();
 globalThis.SESSIONS = SESSIONS;
 
@@ -28,24 +28,22 @@ async function setSession(res, session) {
   SESSIONS.set(sid, session);
   res.cookie("sid", sid, {
     httpOnly: true,
-    sameSite: "lax",
+    sameSite: "lax",              // für Redirects auf die gleiche Domain ok
     secure: COOKIE_SECURE === "true",
     signed: true,
     maxAge: 1000 * 60 * 60 * 24 * 7,
-    // domain optional: auf gleichem Host nicht nötig
-    // domain: "trend-pro.onrender.com"
+    domain: "trend-pro.onrender.com",   // <— explizit, damit Browser das Cookie akzeptiert
+    path: "/"
   });
 }
 app.use((req, res, next) => { req.__setSession = (s) => setSession(res, s); next(); });
 
-// ---- sanity routes
+// ---- Basics
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/debug-env", (_req, res) => res.json({ FRONTEND_ORIGIN, COOKIE_SECURE }));
-
-// Root: keine leere 404 mehr
 app.get("/", (_req, res) => res.send("✅ Backend läuft. Nutze /auth/tiktok/login oder /api/me"));
 
-// ---- cookie/session debug (nur temporär)
+// ---- Cookie/Session Debug
 app.get("/api/debug", (req, res) => {
   const sidSigned = req.signedCookies?.sid;
   const sess = sidSigned ? SESSIONS.get(sidSigned) : null;
@@ -59,13 +57,13 @@ app.get("/api/debug", (req, res) => {
   });
 });
 
-// ---- test: setze Dummy-Session, um Cookie-Flow zu prüfen
-app.post("/api/test-set-session", async (req, res) => {
+// ---- Test: Dummy-Session (GET, damit du per Browser klicken kannst)
+app.get("/api/test-set-session", async (_req, res) => {
   await setSession(res, { access_token: "DUMMY_TOKEN_FOR_TEST" });
   res.json({ ok: true, msg: "dummy session set" });
 });
 
-// ---- authenticated me
+// ---- /api/me (liest Session)
 app.get("/api/me", async (req, res) => {
   const sid = req.signedCookies?.sid;
   const sess = sid ? SESSIONS.get(sid) : null;
@@ -85,7 +83,6 @@ app.get("/api/me", async (req, res) => {
   }
 });
 
-// ---- oauth router
 app.use("/auth/tiktok", tiktokRouter);
 
 app.listen(Number(PORT), "0.0.0.0", () => {
