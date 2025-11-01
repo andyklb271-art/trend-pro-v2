@@ -8,33 +8,25 @@ const val = (v) => (v ?? "").toString().trim();
 const CLIENT_KEY      = val(process.env.TIKTOK_CLIENT_KEY);
 const CLIENT_SECRET   = val(process.env.TIKTOK_CLIENT_SECRET);
 const REDIRECT_URI    = val(process.env.REDIRECT_URI);
-const FRONTEND_ORIGIN = val(process.env.FRONTEND_ORIGIN || "http://localhost:5173");
+const FRONTEND_ORIGIN = val(process.env.FRONTEND_ORIGIN || "https://trend-pro.onrender.com");
+const SCOPES          = val(process.env.TIKTOK_SCOPES || "user.info.basic,user.info.profile");
 
+// --- Login: Redirect zu TikTok ---
 router.get("/login", (_req, res) => {
   const state = crypto.randomBytes(16).toString("hex");
   const u = new URL("https://www.tiktok.com/v2/auth/authorize/");
   u.searchParams.set("client_key", CLIENT_KEY);
-  u.searchParams.set("scope", "user.info.basic");
+  u.searchParams.set("scope", SCOPES);
   u.searchParams.set("response_type", "code");
   u.searchParams.set("redirect_uri", REDIRECT_URI);
   u.searchParams.set("state", state);
   res.redirect(u.toString());
 });
 
-router.get("/debug", (_req, res) => {
-  res.json({
-    env: {
-      TIKTOK_CLIENT_KEY_present: !!CLIENT_KEY,
-      TIKTOK_CLIENT_SECRET_present: !!CLIENT_SECRET,
-      REDIRECT_URI,
-      FRONTEND_ORIGIN,
-    }
-  });
-});
-
+// --- Callback: Token eintauschen + Session setzen ---
 router.get("/callback", async (req, res) => {
   const { code, error, error_description } = req.query;
-  if (error) return res.status(400).send(TikTok Error: System.Management.Automation.ParseException: In Zeile:1 Zeichen:24
+  if (error) return res.status(400).send(TikTok Error: Die Benennung "https://trend-pro.onrender.com/auth/tiktok/login" wurde nicht als Name eines Cmdlet, einer Funktion, einer Skriptdatei oder eines ausführbaren Programms erkannt. Überprüfen Sie die Schreibweise des Namens, oder ob der Pfad korrekt ist (sofern enthalten), und wiederholen Sie den Vorgang. Die Benennung "https://trend-pro.onrender.com/auth/tiktok/debug" wurde nicht als Name eines Cmdlet, einer Funktion, einer Skriptdatei oder eines ausführbaren Programms erkannt. Überprüfen Sie die Schreibweise des Namens, oder ob der Pfad korrekt ist (sofern enthalten), und wiederholen Sie den Vorgang. Die Benennung "https://trend-pro.onrender.com/debug-env" wurde nicht als Name eines Cmdlet, einer Funktion, einer Skriptdatei oder eines ausführbaren Programms erkannt. Überprüfen Sie die Schreibweise des Namens, oder ob der Pfad korrekt ist (sofern enthalten), und wiederholen Sie den Vorgang. System.Management.Automation.ParseException: In Zeile:1 Zeichen:24
 + Token response status: <STATUS> ok: <true/false>
 +                        ~
 Der Operator "<" ist für zukünftige Versionen reserviert.
@@ -657,16 +649,13 @@ Der Operator "<" ist für zukünftige Versionen reserviert.
   if (!code) return res.status(400).send("Missing ?code parameter");
 
   try {
-    const decodedCode = decodeURIComponent(String(code));
     const form = new URLSearchParams({
       client_key: CLIENT_KEY,
       client_secret: CLIENT_SECRET,
-      code: decodedCode,
+      code: String(code),
       grant_type: "authorization_code",
       redirect_uri: REDIRECT_URI,
     });
-
-    console.log("POST /v2/oauth/token fields:", Array.from(form.keys()));
 
     const r = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
       method: "POST",
@@ -674,16 +663,50 @@ Der Operator "<" ist für zukünftige Versionen reserviert.
       body: form.toString(),
     });
 
-    const text = await r.text();
-    let data; try { data = JSON.parse(text); } catch { data = { raw: text }; }
-
+    const data = await r.json();
     if (!r.ok || data?.error || data?.error_code || data?.data?.error_code) {
       return res.status(400).type("text").send("Token exchange failed: " + JSON.stringify(data));
     }
 
+    // Session speichern (serverseitig)
+    req.__setSession?.({
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      open_id: data.open_id,
+      expires_in: data.expires_in,
+    });
+
+    // zurück zur App
     return res.redirect(${FRONTEND_ORIGIN}/?auth=ok);
   } catch (err) {
     return res.status(500).send("Token fetch failed: " + err.message);
+  }
+});
+
+// --- Token Refresh ---
+router.post("/refresh", express.json(), async (req, res) => {
+  const { refresh_token } = req.body || {};
+  if (!refresh_token) return res.status(400).json({ error: "missing refresh_token" });
+
+  try {
+    const form = new URLSearchParams({
+      client_key: CLIENT_KEY,
+      client_secret: CLIENT_SECRET,
+      grant_type: "refresh_token",
+      refresh_token,
+    });
+
+    const r = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+    const data = await r.json();
+    if (!r.ok || data?.error) return res.status(400).json({ error: data });
+
+    return res.json(data);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
   }
 });
 
