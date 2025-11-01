@@ -19,8 +19,9 @@ app.use(express.json());
 app.use(cors({ origin: [FRONTEND_ORIGIN], credentials: true }));
 app.use(cookieParser(SESSION_SECRET));
 
-// ---- simple in-memory session store (reicht für jetzt)
+// ---- Sessions global sichtbar machen (für Router/Debug)
 const SESSIONS = new Map();
+globalThis.SESSIONS = SESSIONS;
 
 async function setSession(res, session) {
   const sid = crypto.randomBytes(24).toString("hex");
@@ -31,6 +32,8 @@ async function setSession(res, session) {
     secure: COOKIE_SECURE === "true",
     signed: true,
     maxAge: 1000 * 60 * 60 * 24 * 7,
+    // domain optional: auf gleichem Host nicht nötig
+    // domain: "trend-pro.onrender.com"
   });
 }
 app.use((req, res, next) => { req.__setSession = (s) => setSession(res, s); next(); });
@@ -41,6 +44,26 @@ app.get("/debug-env", (_req, res) => res.json({ FRONTEND_ORIGIN, COOKIE_SECURE }
 
 // Root: keine leere 404 mehr
 app.get("/", (_req, res) => res.send("✅ Backend läuft. Nutze /auth/tiktok/login oder /api/me"));
+
+// ---- cookie/session debug (nur temporär)
+app.get("/api/debug", (req, res) => {
+  const sidSigned = req.signedCookies?.sid;
+  const sess = sidSigned ? SESSIONS.get(sidSigned) : null;
+  res.json({
+    cookies: req.cookies,
+    signedCookies: req.signedCookies,
+    hasSid: !!sidSigned,
+    sessionExists: !!sess,
+    session: sess || null,
+    sessionsCount: SESSIONS.size
+  });
+});
+
+// ---- test: setze Dummy-Session, um Cookie-Flow zu prüfen
+app.post("/api/test-set-session", async (req, res) => {
+  await setSession(res, { access_token: "DUMMY_TOKEN_FOR_TEST" });
+  res.json({ ok: true, msg: "dummy session set" });
+});
 
 // ---- authenticated me
 app.get("/api/me", async (req, res) => {
@@ -56,13 +79,13 @@ app.get("/api/me", async (req, res) => {
       headers: { Authorization: `Bearer ${sess.access_token}` }
     });
     const data = await r.json().catch(() => ({}));
-    return res.json({ ok: true, user: data?.data || data || { open_id: sess.open_id } });
+    return res.json({ ok: true, user: data?.data || data || { open_id: "unknown" } });
   } catch (e) {
-    return res.json({ ok: true, user: { open_id: sess.open_id }, warn: "userinfo_fetch_failed", detail: e.message });
+    return res.json({ ok: true, user: { open_id: "unknown" }, warn: "userinfo_fetch_failed", detail: e.message });
   }
 });
 
-// ---- mount oauth router
+// ---- oauth router
 app.use("/auth/tiktok", tiktokRouter);
 
 app.listen(Number(PORT), "0.0.0.0", () => {
