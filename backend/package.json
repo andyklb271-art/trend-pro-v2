@@ -1,9 +1,7 @@
 ﻿{
-  "name": "trend-pro-v2-backend",
-  "version": "1.0.0",
-  "main": "server.js",
+  "name": "trend-pro-backend",
   "type": "module",
-  "scripts": { "dev": "nodemon server.js", "start": "node server.js" },
+  "private": true,
   "dependencies": {
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
@@ -11,5 +9,7 @@
     "express": "^4.19.2",
     "node-fetch": "^3.3.2"
   },
-  "devDependencies": { "nodemon": "^3.1.0" }
+  "scripts": {
+    "start": "node server.js"
+  }
 }
