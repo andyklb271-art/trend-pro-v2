@@ -4,87 +4,190 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import crypto from "crypto";
 import fetch from "node-fetch";
-import tiktokRouter from "./routes/tiktok.js";
 
 const {
   PORT = 3000,
-  FRONTEND_ORIGIN = "https://trend-pro.onrender.com",
+  NODE_ENV = "production",
+  FRONTEND_ORIGIN = "http://localhost:5173",
+  REDIRECT_URI = "https://trend-pro.onrender.com/auth/tiktok/callback",
+  TIKTOK_CLIENT_KEY,
+  TIKTOK_CLIENT_SECRET,
   SESSION_SECRET = "change-me",
-  COOKIE_SECURE = "true"
 } = process.env;
 
 const app = express();
-app.set("trust proxy", 1);
+app.use(cors({
+  origin: [FRONTEND_ORIGIN, "http://localhost:5173", "https://trend-pro.onrender.com"],
+  credentials: true
+}));
 app.use(express.json());
-app.use(cors({ origin: [FRONTEND_ORIGIN], credentials: true }));
 app.use(cookieParser(SESSION_SECRET));
 
-// ---- Sessions global (für Router & Debug)
-const SESSIONS = new Map();
-globalThis.SESSIONS = SESSIONS;
+// RAM session (PoC)
+let SESSION = { state: null, access_token: null, refresh_token: null, user: null };
 
-async function setSession(res, session) {
-  const sid = crypto.randomBytes(24).toString("hex");
-  SESSIONS.set(sid, session);
-  res.cookie("sid", sid, {
-    httpOnly: true,
-    sameSite: "lax",              // für Redirects auf die gleiche Domain ok
-    secure: COOKIE_SECURE === "true",
-    signed: true,
-    maxAge: 1000 * 60 * 60 * 24 * 7,
-    domain: "trend-pro.onrender.com",   // <— explizit, damit Browser das Cookie akzeptiert
-    path: "/"
+const TIKTOK_AUTH_URL     = "https://www.tiktok.com/v2/auth/authorize/";
+const TIKTOK_TOKEN_URL    = "https://open.tiktokapis.com/v2/oauth/token/";
+const TIKTOK_USERINFO_URL = "https://open.tiktokapis.com/v2/user/info/";
+
+// Minimal: nur Login-Kit Basisscope (später erweitern)
+const SCOPES = ["user.info.basic","user.info.profile","user.info.stats"];
+
+function buildAuthUrl() {
+  const state = crypto.randomBytes(16).toString("hex");
+  SESSION.state = state;
+
+  const params = new URLSearchParams({
+    client_key: TIKTOK_CLIENT_KEY,
+    // TikTok erwartet SPACE-separiert (keine Kommata!)
+    scope: SCOPES.join(" "),
+    response_type: "code",
+    redirect_uri: REDIRECT_URI,
+    state,
   });
+  return `${TIKTOK_AUTH_URL}?${params.toString()}`;
 }
-app.use((req, res, next) => { req.__setSession = (s) => setSession(res, s); next(); });
 
-// ---- Basics
-app.get("/health", (_req, res) => res.json({ ok: true }));
-app.get("/debug-env", (_req, res) => res.json({ FRONTEND_ORIGIN, COOKIE_SECURE }));
-app.get("/", (_req, res) => res.send("✅ Backend läuft. Nutze /auth/tiktok/login oder /api/me"));
-
-// ---- Cookie/Session Debug
-app.get("/api/debug", (req, res) => {
-  const sidSigned = req.signedCookies?.sid;
-  const sess = sidSigned ? SESSIONS.get(sidSigned) : null;
-  res.json({
-    cookies: req.cookies,
-    signedCookies: req.signedCookies,
-    hasSid: !!sidSigned,
-    sessionExists: !!sess,
-    session: sess || null,
-    sessionsCount: SESSIONS.size
+async function exchangeCodeForToken(code) {
+  const body = {
+    client_key: TIKTOK_CLIENT_KEY,
+    client_secret: TIKTOK_CLIENT_SECRET,
+    code,
+    grant_type: "authorization_code",
+    redirect_uri: REDIRECT_URI,
+  };
+  const res = await fetch(TIKTOK_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
   });
+  const txt = await res.text();
+  if (!res.ok) throw new Error(`Token exchange failed: ${res.status} ${txt}`);
+  return JSON.parse(txt);
+}
+
+async function refreshToken(refresh_token) {
+  const body = {
+    client_key: TIKTOK_CLIENT_KEY,
+    client_secret: TIKTOK_CLIENT_SECRET,
+    grant_type: "refresh_token",
+    refresh_token
+  };
+  const res = await fetch(TIKTOK_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  const txt = await res.text();
+  if (!res.ok) throw new Error(`Refresh failed: ${res.status} ${txt}`);
+  return JSON.parse(txt);
+}
+
+app.get("/health", (_req, res) => {
+  res.json({ ok: true, env: { NODE_ENV, FRONTEND_ORIGIN, REDIRECT_URI, scopes: SCOPES } });
 });
 
-// ---- Test: Dummy-Session (GET, damit du per Browser klicken kannst)
-app.get("/api/test-set-session", async (_req, res) => {
-  await setSession(res, { access_token: "DUMMY_TOKEN_FOR_TEST" });
-  res.json({ ok: true, msg: "dummy session set" });
-});
-
-// ---- /api/me (liest Session)
-app.get("/api/me", async (req, res) => {
-  const sid = req.signedCookies?.sid;
-  const sess = sid ? SESSIONS.get(sid) : null;
-
-  if (!sess?.access_token) {
-    return res.status(401).json({ ok: false, error: "not_authenticated" });
+app.get("/auth/tiktok/login", (_req, res) => {
+  if (!TIKTOK_CLIENT_KEY || !TIKTOK_CLIENT_SECRET) {
+    return res.status(500).json({ error: "TikTok credentials missing" });
   }
+  res.redirect(buildAuthUrl());
+});
 
+app.get("/auth/tiktok/callback", async (req, res) => {
   try {
-    const r = await fetch("https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name,avatar_url", {
-      headers: { Authorization: `Bearer ${sess.access_token}` }
+    const { code, state, error, error_description } = req.query;
+    if (error) return res.status(400).send(`TikTok error: ${error} ${error_description || ""}`);
+    if (!code || !state) return res.status(400).send("Missing code/state");
+    if (!SESSION.state || state !== SESSION.state) return res.status(400).send("Invalid state");
+
+    const tokenJson = await exchangeCodeForToken(code.toString());
+    SESSION.access_token  = tokenJson.access_token;
+    SESSION.refresh_token = tokenJson.refresh_token;
+
+    const ui = await fetch(TIKTOK_USERINFO_URL, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${SESSION.access_token}`,
+        "Content-Type": "application/json"
+      }
     });
-    const data = await r.json().catch(() => ({}));
-    return res.json({ ok: true, user: data?.data || data || { open_id: "unknown" } });
+    const userJson = await ui.json();
+    const u = userJson?.data?.user;
+    SESSION.user = u ? {
+      open_id: u.open_id,
+      display_name: u.display_name,
+      avatar_url: u.avatar_url
+    } : null;
+
+    const sid = crypto.randomBytes(18).toString("hex");
+    res.cookie("sid", sid, {
+      httpOnly: true,
+      sameSite: NODE_ENV === "production" ? "none" : "lax",
+      secure: NODE_ENV === "production",
+      signed: true,
+      maxAge: 7 * 24 * 3600 * 1000
+    });
+    res.redirect(FRONTEND_ORIGIN);
   } catch (e) {
-    return res.json({ ok: true, user: { open_id: "unknown" }, warn: "userinfo_fetch_failed", detail: e.message });
+    console.error("[Auth Callback Error]", e);
+    res.status(500).send(`Auth error: ${(e && e.message) || e}`);
   }
 });
 
-app.use("/auth/tiktok", tiktokRouter);
+app.get("/auth/tiktok/logout", (_req, res) => {
+  SESSION = { state: null, access_token: null, refresh_token: null, user: null };
+  res.clearCookie("sid");
+  res.json({ ok: true });
+});
+
+app.get("/api/me", async (_req, res) => {
+  try {
+    if (!SESSION.access_token) return res.status(401).json({ error: "Not logged in" });
+
+    const ui = await fetch(TIKTOK_USERINFO_URL, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${SESSION.access_token}`,
+        "Content-Type": "application/json"
+      }
+    });
+    const j = await ui.json();
+    const u = j?.data?.user;
+    if (u) {
+      SESSION.user = {
+        open_id: u.open_id,
+        display_name: u.display_name,
+        avatar_url: u.avatar_url
+      };
+    }
+    res.json({ ok: true, user: SESSION.user });
+  } catch (e) {
+    console.error("[ME Error]", e);
+    res.status(500).json({ error: (e && e.message) || e });
+  }
+});
+
+app.get("/api/refresh", async (_req, res) => {
+  try {
+    if (!SESSION.refresh_token) return res.status(400).json({ error: "No refresh_token" });
+    const r = await refreshToken(SESSION.refresh_token);
+    SESSION.access_token = r.access_token;
+    SESSION.refresh_token = r.refresh_token || SESSION.refresh_token;
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[Refresh Error]", e);
+    res.status(500).json({ error: (e && e.message) || e });
+  }
+});
 
 app.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`✅ API on :${PORT}`);
+  console.log(`   FRONTEND_ORIGIN: ${FRONTEND_ORIGIN}`);
+  console.log(`   REDIRECT_URI   : ${REDIRECT_URI}`);
+  console.log(`   SCOPES         : ${SCOPES.join(" ")}`);
 });
+
+
+
+app.get('/auth/tiktok/debug',(_req,res)=>res.send(buildAuthUrl()));
