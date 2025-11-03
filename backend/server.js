@@ -31,7 +31,7 @@ const TIKTOK_TOKEN_URL    = "https://open.tiktokapis.com/v2/oauth/token/";
 const TIKTOK_USERINFO_URL = "https://open.tiktokapis.com/v2/user/info/";
 
 // Minimal: nur Login-Kit Basisscope (später erweitern)
-const SCOPES = ["user.info.basic"];
+const SCOPES = ["user.info.basic];
 
 function buildAuthUrl() {
   const state = crypto.randomBytes(16).toString("hex");
@@ -40,7 +40,7 @@ function buildAuthUrl() {
   const params = new URLSearchParams({
     client_key: TIKTOK_CLIENT_KEY,
     // TikTok erwartet SPACE-separiert (keine Kommata!)
-    scope: "user.info.basic",
+    scope: "user.info.basic
     response_type: "code",
     redirect_uri: REDIRECT_URI,
     state,
