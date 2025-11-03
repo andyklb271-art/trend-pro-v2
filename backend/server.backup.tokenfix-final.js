@@ -83,36 +83,21 @@ async function exchangeCodeForToken(code) {
 // =============================================================
 // Routes
 // =============================================================
-app.get('/health', (_req,res)=>{
-  res.json({
-    ok:true,
-    env:{ FRONTEND_ORIGIN: process.env.FRONTEND_ORIGIN, REDIRECT_URI: process.env.REDIRECT_URI },
-    has_token: !!(SESSION && SESSION.oauth && SESSION.oauth.access_token)
-  });
-});
+app.get('/health', (_req, res) => {
+  res.json({ ok:true, env:{ FRONTEND_ORIGIN, REDIRECT_URI }, has_token: !!SESSION.oauth });
 });
 
 app.get('/auth/tiktok/login', (_req,res)=>{
   res.redirect(buildAuthUrl());
 });
 
-app.get('/auth/tiktok/callback', async (req, res) => {
+app.get('/auth/tiktok/callback', async (req,res)=>{
   try {
-    const code = req.query.code;
-    const state = req.query.state;
-    if (!code) return res.status(400).send('Missing code');
-    // optional: wenn du state prüfst, hier vergleichen
-
-    const tokenData = await exchangeCodeForToken(code);
-
-    // nur bei echtem Erfolg speichern
-    if (!tokenData || !tokenData.access_token) {
-      console.error('❌ Kein access_token in Antwort:', tokenData);
-      return res.status(400).send('Token missing in response');
-    }
-
-    SESSION.oauth = tokenData;
-
+    const { code, state } = req.query;
+    if (!code || !state || state !== SESSION.state) return res.status(400).send('Invalid state');
+    const tokenJson = await exchangeCodeForToken(code);
+    SESSION.oauth = tokenJson;
+    console.log('✅ Token erhalten:', tokenJson);
     res.cookie('logged_in','1',{
       httpOnly:false,
       secure:true,
@@ -121,13 +106,6 @@ app.get('/auth/tiktok/callback', async (req, res) => {
       path:'/',
       maxAge:7*24*60*60*1000
     });
-
-    return res.redirect(process.env.FRONTEND_ORIGIN + '/?auth=success');
-  } catch (e) {
-    console.error('❌ Callback error:', e);
-    return res.status(500).send('Callback error: ' + (e.message || e));
-  }
-});
     return res.redirect(FRONTEND_ORIGIN + '/?auth=success');
   } catch(e){
     res.status(500).send('Callback error: ' + e.message);
@@ -136,10 +114,9 @@ app.get('/auth/tiktok/callback', async (req, res) => {
 
 app.get('/auth/tiktok/debug', (_req,res)=>{
   res.json({
-    env:{ FRONTEND_ORIGIN: process.env.FRONTEND_ORIGIN, REDIRECT_URI: process.env.REDIRECT_URI },
-    session:{ has_token: !!(SESSION && SESSION.oauth && SESSION.oauth.access_token), oauth: SESSION && SESSION.oauth ? { open_id: SESSION.oauth.open_id, scope: SESSION.oauth.scope, expires_in: SESSION.oauth.expires_in } : null }
+    env:{ FRONTEND_ORIGIN, REDIRECT_URI },
+    session:{ has_token: !!SESSION.oauth, oauth: SESSION.oauth }
   });
-});
 });
 
 app.get('/api/me', async (_req,res)=>{
@@ -156,6 +133,3 @@ app.get('/api/me', async (_req,res)=>{
 app.listen(PORT, '0.0.0.0', ()=>{
   console.log('✅ API on :' + PORT);
 });
-
-
-
