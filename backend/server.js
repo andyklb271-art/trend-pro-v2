@@ -1,161 +1,131 @@
-﻿import "dotenv/config";
-import express from "express";
-import cors from "cors";
-import cookieParser from "cookie-parser";
-import crypto from "crypto";
-import fetch from "node-fetch";
+﻿import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';
+import crypto from 'crypto';
+import fetch from 'node-fetch';
 
 const {
   PORT = 3000,
-  NODE_ENV = "production",
-  FRONTEND_ORIGIN = "http://localhost:5173",
-  REDIRECT_URI = "https://trend-pro.onrender.com/auth/tiktok/callback",
+  NODE_ENV = 'production',
+  FRONTEND_ORIGIN = 'http://localhost:5173',
+  REDIRECT_URI = 'https://trend-pro.onrender.com/auth/tiktok/callback',
   TIKTOK_CLIENT_KEY,
   TIKTOK_CLIENT_SECRET,
-  SESSION_SECRET = "change-me",
+  SESSION_SECRET = 'change-me'
 } = process.env;
 
-// Erzwinge exakt einen Scope
-const TIKTOK_SCOPE = "user.info.basic";
+// =============================================================
+// Session-Objekt bleibt im RAM (später Redis/Upstash möglich)
+// =============================================================
+const SESSION = { state: null, oauth: null };
 
+// =============================================================
+// App Setup
+// =============================================================
 const app = express();
 app.use(express.json());
 app.use(cookieParser(SESSION_SECRET));
-app.use(
-  cors({
-    origin: [FRONTEND_ORIGIN],
-    credentials: true,
-  })
-);
 
-// In-Memory Session
-const SESSION = { state: null, oauth: null };
+// --- CORS fix ---
+app.use(cors({
+  origin: [FRONTEND_ORIGIN],
+  credentials: true,
+  methods: ['GET','POST'],
+  allowedHeaders: ['Content-Type','Authorization','Origin','Accept'],
+  exposedHeaders: ['Set-Cookie']
+}));
 
-// Health
-app.get("/health", function (_req, res) {
-  res.status(200).json({
-    ok: true,
-    env: {
-      NODE_ENV: NODE_ENV,
-      FRONTEND_ORIGIN: FRONTEND_ORIGIN,
-      REDIRECT_URI: REDIRECT_URI,
-      scopes: [TIKTOK_SCOPE],
-    },
-  });
-});
-
-// Helpers
+// =============================================================
+// TikTok OAuth
+// =============================================================
 function buildAuthUrl() {
-  const state = crypto.randomBytes(16).toString("hex");
+  const state = crypto.randomBytes(16).toString('hex');
   SESSION.state = state;
-
-  const params = new URLSearchParams();
-  params.set("client_key", TIKTOK_CLIENT_KEY);
-  params.set("scope", TIKTOK_SCOPE);
-  params.set("response_type", "code");
-  params.set("redirect_uri", REDIRECT_URI);
-  params.set("state", state);
-
-  return "https://www.tiktok.com/v2/auth/authorize/?" + params.toString();
+  const p = new URLSearchParams({
+    client_key: TIKTOK_CLIENT_KEY,
+    scope: 'user.info.basic',
+    response_type: 'code',
+    redirect_uri: REDIRECT_URI,
+    state
+  });
+  return 'https://www.tiktok.com/v2/auth/authorize/?' + p.toString();
 }
 
 async function exchangeCodeForToken(code) {
-  const url = "https://open.tiktokapis.com/v2/oauth/token/";
-  const body = {
-    client_key: TIKTOK_CLIENT_KEY,
-    client_secret: TIKTOK_CLIENT_SECRET,
-    code: code,
-    grant_type: "authorization_code",
-    redirect_uri: REDIRECT_URI,
-  };
-
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json; charset=UTF-8" },
-    body: JSON.stringify(body),
+  const r = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_key: TIKTOK_CLIENT_KEY,
+      client_secret: TIKTOK_CLIENT_SECRET,
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: REDIRECT_URI
+    })
   });
-
-  if (!resp.ok) {
-    const txt = await resp.text();
-    throw new Error("Token exchange failed: HTTP " + resp.status + " " + txt);
-  }
-  return await resp.json();
+  if (!r.ok) throw new Error('Token exchange failed: ' + r.status);
+  return await r.json();
 }
 
-async function getUserInfo(access_token) {
-  const url = "https://open.tiktokapis.com/v2/user/info/";
-  const resp = await fetch(url, {
-    method: "GET",
-    headers: { Authorization: "Bearer " + access_token },
+async function getUserInfo(token) {
+  const r = await fetch('https://open.tiktokapis.com/v2/user/info/', {
+    headers: { Authorization: 'Bearer ' + token }
   });
-  if (!resp.ok) {
-    const txt = await resp.text();
-    throw new Error("User info failed: HTTP " + resp.status + " " + txt);
-  }
-  return await resp.json();
+  if (!r.ok) throw new Error('User info failed: ' + r.status);
+  return await r.json();
 }
 
+// =============================================================
 // Routes
-app.get("/auth/tiktok/login", function (_req, res) {
-  try {
-    const url = buildAuthUrl();
-    res.redirect(url);
-  } catch (e) {
-    res.status(500).json({ error: String(e && e.message ? e.message : e) });
-  }
+// =============================================================
+app.get('/health', (_req, res) => {
+  res.json({ ok:true, env:{ FRONTEND_ORIGIN, REDIRECT_URI }, has_token: !!SESSION.oauth });
 });
 
-app.get("/auth/tiktok/callback", async function (req, res) {
+app.get('/auth/tiktok/login', (_req,res)=>{
+  res.redirect(buildAuthUrl());
+});
+
+app.get('/auth/tiktok/callback', async (req,res)=>{
   try {
-    const code = req.query.code;
-    const state = req.query.state;
-    const error = req.query.error;
-    const error_type = req.query.error_type;
-
-    if (error) return res.status(400).send("OAuth error: " + error + " (" + (error_type || "no-type") + ")");
-    if (!code || !state) return res.status(400).send("Missing code/state");
-    if (!SESSION.state || state !== SESSION.state) return res.status(400).send("Invalid state");
-
+    const { code, state } = req.query;
+    if (!code || !state || state !== SESSION.state) return res.status(400).send('Invalid state');
     const tokenJson = await exchangeCodeForToken(code);
     SESSION.oauth = tokenJson;
-    SESSION.state = null;
-
-    res.cookie("logged_in", "1", {
-      httpOnly: false,
-      secure: true,
-      sameSite: "none",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+    console.log('✅ Token erhalten:', tokenJson);
+    res.cookie('logged_in','1',{
+      httpOnly:false,
+      secure:true,
+      sameSite:'none',
+      domain:'.onrender.com',
+      path:'/',
+      maxAge:7*24*60*60*1000
     });
-
-    return res.redirect(FRONTEND_ORIGIN + "/?auth=success");
-  } catch (e) {
-    return res.status(500).send("Callback error: " + String(e && e.message ? e.message : e));
+    return res.redirect(FRONTEND_ORIGIN + '/?auth=success');
+  } catch(e){
+    res.status(500).send('Callback error: ' + e.message);
   }
 });
 
-app.get("/auth/tiktok/debug", function (_req, res) {
-  const safe = SESSION.oauth
-    ? { has_token: true, open_id: SESSION.oauth.open_id, scope: SESSION.oauth.scope, expires_in: SESSION.oauth.expires_in }
-    : { has_token: false };
-  res.json({ env: { FRONTEND_ORIGIN: FRONTEND_ORIGIN, REDIRECT_URI: REDIRECT_URI, scope_enforced: TIKTOK_SCOPE }, session: safe });
+app.get('/auth/tiktok/debug', (_req,res)=>{
+  res.json({
+    env:{ FRONTEND_ORIGIN, REDIRECT_URI },
+    session:{ has_token: !!SESSION.oauth, oauth: SESSION.oauth }
+  });
 });
 
-app.get("/api/me", async function (_req, res) {
+app.get('/api/me', async (_req,res)=>{
   try {
-    if (!SESSION.oauth || !SESSION.oauth.access_token) {
-      return res.status(401).json({ error: "Not authenticated" });
-    }
+    if (!SESSION.oauth?.access_token) return res.status(401).json({error:'Not authenticated'});
     const data = await getUserInfo(SESSION.oauth.access_token);
-    return res.json({ data: data });
-  } catch (e) {
-    return res.status(500).json({ error: String(e && e.message ? e.message : e) });
+    res.json({data});
+  } catch(e){
+    res.status(500).json({error:e.message});
   }
 });
 
-// Start
-app.listen(Number(PORT), "0.0.0.0", function () {
-  console.log("✅ API on :" + PORT);
-  console.log("   FRONTEND_ORIGIN: " + FRONTEND_ORIGIN);
-  console.log("   REDIRECT_URI   : " + REDIRECT_URI);
-  console.log("   SCOPE          : " + TIKTOK_SCOPE);
+// =============================================================
+app.listen(PORT, '0.0.0.0', ()=>{
+  console.log('✅ API on :' + PORT);
 });
