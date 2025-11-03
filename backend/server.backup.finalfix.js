@@ -53,32 +53,28 @@ function buildAuthUrl() {
 }
 
 async function exchangeCodeForToken(code) {
-  const params = new URLSearchParams();
-  params.append('client_key', TIKTOK_CLIENT_KEY);
-  params.append('client_secret', TIKTOK_CLIENT_SECRET);
-  params.append('grant_type', 'authorization_code');
-  params.append('redirect_uri', REDIRECT_URI);
-  params.append('code', code);
-
-  const resp = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
+  const r = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-    },
-    body: params.toString(),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_key: TIKTOK_CLIENT_KEY,
+      client_secret: TIKTOK_CLIENT_SECRET,
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: REDIRECT_URI
+    })
   });
-
-  const text = await resp.text();
-  if (!resp.ok) {
-    console.error('❌ Token error:', text);
-    throw new Error('Token exchange failed: ' + resp.status);
-  }
-
-  const json = JSON.parse(text);
-  console.log('✅ Token erhalten:', json);
-  return json;
+  if (!r.ok) throw new Error('Token exchange failed: ' + r.status);
+  return await r.json();
 }
 
+async function getUserInfo(token) {
+  const r = await fetch('https://open.tiktokapis.com/v2/user/info/', {
+    headers: { Authorization: 'Bearer ' + token }
+  });
+  if (!r.ok) throw new Error('User info failed: ' + r.status);
+  return await r.json();
+}
 
 // =============================================================
 // Routes
